@@ -23,6 +23,7 @@ export interface IChatitoEntityAST {
     type: 'IntentDefinition' | 'AliasDefinition' | 'SlotDefinition' | 'Comment';
     key: string;
     inner: ISentenceTokens[][];
+    paths?: number[][];
     location?: IASTLocation;
     variation?: string | null;
     args?: { [key: string]: string };

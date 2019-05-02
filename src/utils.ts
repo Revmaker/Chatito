@@ -58,9 +58,21 @@ export const maxSentencesForSentence = (
     return sr;
 };
 
-export const maxSentencesForEntity = (ed: IChatitoEntityAST, entities: IEntities, stack: IChatitoEntityAST[] = []): number => {
+export const maxSentences = (ed: IChatitoEntityAST, entities: IEntities, stack: IChatitoEntityAST[] = []) => {
     validateAndPushToStack(ed, stack);
-    return ed.inner.map(maxSentencesForSentence(entities, stack)).reduce((acc, val) => acc + val);
+    // if (ed.type === "IntentDefinition") {
+    //     console.log('ED:', ed);
+    //     console.log('STACK:', stack);
+    // }
+    return ed.inner.map(maxSentencesForSentence(entities, stack));
+}
+
+export const maxSentencesForEntity = (ed: IChatitoEntityAST, entities: IEntities, stack: IChatitoEntityAST[] = []): number => {
+    // if (ed.type === "IntentDefinition") {
+    //     console.log('ED:', ed);
+    //     console.log('MAXES:', ed.inner.map(maxSentencesForSentence(entities, stack)));
+    // }
+    return maxSentences(ed, entities, stack).reduce((acc, val) => acc + val);
 }
 
 // Deep merge objects
