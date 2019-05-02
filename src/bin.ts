@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import * as fs from 'fs';
 import * as path from 'path';
+import * as dialogflow from './adapters/dialogflow';
 import * as rasa from './adapters/rasa';
 import * as snips from './adapters/snips';
 import * as web from './adapters/web';
@@ -9,7 +10,7 @@ import * as utils from './utils';
 // tslint:disable-next-line:no-var-requires
 const argv = require('minimist')(process.argv.slice(2));
 
-const adapters = { default: web, rasa, snips };
+const adapters = { default: web, rasa, snips, dialogflow };
 
 const workingDirectory = process.cwd();
 const getFileWithPath = (filename: string) => path.resolve(workingDirectory, filename);
@@ -32,8 +33,8 @@ const chatitoFilesFromDir = async (startPath: string, cb: (filename: string) => 
     }
 };
 
-const adapterAccumulator = (format: 'default' | 'rasa' | 'snips', formatOptions?: any) => {
-    const trainingDataset: snips.ISnipsDataset | rasa.IRasaDataset | {} = {};
+const adapterAccumulator = (format: 'default' | 'rasa' | 'snips' | 'dialogflow', formatOptions?: any) => {
+    const trainingDataset: dialogflow.IDialogflowDataset = { data: [] };
     const testingDataset: any = {};
     const adapterHandler = adapters[format];
     if (!adapterHandler) {
@@ -53,11 +54,20 @@ const adapterAccumulator = (format: 'default' | 'rasa' | 'snips', formatOptions?
                 fs.mkdirSync(outputPath);
             }
 
-            const trainingJsonFileName = argv.trainingFileName || `${format}_dataset_training.json`;
-            const trainingJsonFilePath = path.resolve(outputPath, trainingJsonFileName);
-            fs.writeFileSync(trainingJsonFilePath, JSON.stringify(trainingDataset));
-            // tslint:disable-next-line:no-console
-            console.log(`Saved training dataset: ${trainingJsonFilePath}`);
+            const examples = trainingDataset.data.length;
+            let index = 1;
+            const perFile = 2000;
+            while ((index - 1) * perFile < examples) {
+                const trainingJsonFileName = argv.trainingFileName || `${format}_dataset_training_${index}.json`;
+                const trainingJsonFilePath = path.resolve(outputPath, trainingJsonFileName);
+                fs.writeFileSync(
+                    trainingJsonFilePath,
+                    JSON.stringify(trainingDataset.data.slice((index - 1) * perFile, index * perFile), undefined, 2)
+                );
+                // tslint:disable-next-line:no-console
+                console.log(`Saved training dataset: ${trainingJsonFilePath}`);
+                index += 1;
+            }
 
             if (Object.keys(testingDataset).length) {
                 const testingFileName = argv.testingFileName || `${format}_dataset_testing.json`;
@@ -78,7 +88,7 @@ const adapterAccumulator = (format: 'default' | 'rasa' | 'snips', formatOptions?
     }
     const configFile = argv._[0];
     const format = (argv.format || 'default').toLowerCase();
-    if (['default', 'rasa', 'snips'].indexOf(format) === -1) {
+    if (['default', 'rasa', 'snips', 'dialogflow'].indexOf(format) === -1) {
         // tslint:disable-next-line:no-console
         console.error(`Invalid format argument: ${format}`);
         process.exit(1);
