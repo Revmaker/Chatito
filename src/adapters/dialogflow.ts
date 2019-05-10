@@ -16,10 +16,15 @@ export interface IDialogflowExample {
 
 export interface IDialogflowDataset {
     data: IDialogflowExample[];
+    synonyms: {
+        [entity: string]: {
+            [value: string]: string[];
+        };
+    };
 }
 
 export async function adapter(dsl: string, formatOptions?: any) {
-    const training = { data: [] } as IDialogflowDataset;
+    const training = { data: [], synonyms: {} } as IDialogflowDataset;
     const testing = {} as IDialogflowDataset;
     const utteranceWriter = (utterance: ISentenceTokens[], intentKey: string, isTrainingExample: boolean) => {
         const example = utterance.reduce(
@@ -56,5 +61,33 @@ export async function adapter(dsl: string, formatOptions?: any) {
         }
     };
     await gen.datasetFromString(dsl, utteranceWriter);
+    const defs = gen.definitionsFromAST(gen.astFromString(dsl));
+    Object.keys(defs.Slot).forEach(key => {
+        const slot = defs.Slot[key];
+        if (!slot.args || !slot.args.entity) {
+            return;
+        }
+        const name = slot.args.entity;
+        let value = slot.key;
+        if (slot.args && slot.args.value) {
+            value = slot.args.value;
+        }
+        if (!name) {
+            throw Error(`No dialogflow entity specified for ${key}`);
+        }
+        if (!(name in training.synonyms)) {
+            training.synonyms[name] = {};
+        }
+        if (!(value in training.synonyms[name])) {
+            training.synonyms[name][value] = [];
+        }
+        // get all combinations for a slot
+        const synonyms = gen.getAllExamples(defs, slot).map(example => example.reduce((acc, token) => acc + token.value, ''));
+        synonyms.forEach(synonym => {
+            if (training.synonyms[name][value].indexOf(synonym) === -1) {
+                training.synonyms[name][value].push(synonym);
+            }
+        });
+    });
     return { training, testing };
 }

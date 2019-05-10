@@ -34,7 +34,7 @@ const chatitoFilesFromDir = async (startPath: string, cb: (filename: string) => 
 };
 
 const adapterAccumulator = (format: 'default' | 'rasa' | 'snips' | 'dialogflow', formatOptions?: any) => {
-    const trainingDataset: dialogflow.IDialogflowDataset = { data: [] };
+    const trainingDataset: dialogflow.IDialogflowDataset = { data: [], synonyms: {} };
     const testingDataset: any = {};
     const adapterHandler = adapters[format];
     if (!adapterHandler) {
@@ -68,6 +68,42 @@ const adapterAccumulator = (format: 'default' | 'rasa' | 'snips' | 'dialogflow',
                 console.log(`Saved training dataset: ${trainingJsonFilePath}`);
                 index += 1;
             }
+            // merge synonyms
+            // load synonyms
+            const agentDir = formatOptions.agentDir;
+            Object.keys(trainingDataset.synonyms)
+                .filter(entity => !entity.startsWith('sys.'))
+                .forEach(entity => {
+                    const entriesFile = path.resolve(`${agentDir}/entities/${entity}_entries_en.json`);
+                    const entries: Array<{ value: string; synonyms: string[] }> = JSON.parse(fs.readFileSync(entriesFile, 'utf8'));
+                    Object.keys(trainingDataset.synonyms[entity]).forEach(entry => {
+                        const synonyms = trainingDataset.synonyms[entity][entry];
+                        // console.log(`Our synonyms for ${entry}`, synonyms);
+                        const i = entries.findIndex(e => e.value === entry);
+                        if (i === -1) {
+                            // console.log(`They don't have synonyms for ${entry}`);
+                            entries.push({
+                                value: entry,
+                                synonyms
+                            });
+                        } else {
+                            // console.log(`Their synonyms for ${entry}`, entries[i].synonyms);
+                            synonyms.forEach(synonym => {
+                                if (entries[i].synonyms.indexOf(synonym) === -1) {
+                                    entries[i].synonyms.push(synonym);
+                                }
+                            });
+                            entries[i].synonyms.forEach(synonym => {
+                                if (synonyms.indexOf(synonym) === -1) {
+                                    // tslint:disable-next-line:no-console
+                                    console.log(`Extra synonym for ${entity}: ${entry} <-`, synonym);
+                                }
+                            });
+                        }
+                    });
+                    fs.writeFileSync(entriesFile, JSON.stringify(entries, undefined, 2));
+                    // console.log(entries);
+                });
 
             if (Object.keys(testingDataset).length) {
                 const testingFileName = argv.testingFileName || `${format}_dataset_testing.json`;

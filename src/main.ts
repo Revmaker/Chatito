@@ -247,6 +247,64 @@ const generateExample = (defs: IEntities, entity: IChatitoEntityAST, path: numbe
     return parts;
 };
 
+const getExampleByNumber = (defs: IEntities, entity: IChatitoEntityAST, combinationNumber: number): ISentenceTokens[] => {
+    let lookupNumber = combinationNumber;
+    const sentenceIndex = entity.cardinalities!.findIndex(cardinality => {
+        if (lookupNumber < cardinality) {
+            return true;
+        }
+        lookupNumber -= cardinality;
+        return false;
+    });
+    const sentence = entity.inner[sentenceIndex];
+    let prevCardinality = 1;
+    let prevRemaining = 0;
+    const resultTokens = sentence.reduce(
+        (example, token) => {
+            if (token.type === 'Text') {
+                return example.concat([token]);
+            }
+            if (token.type === 'Slot' || token.type === 'Alias') {
+                let cardinality = token.opt ? 1 : 0;
+                const innerEntity = token.type === 'Alias' ? defs.Alias : defs.Slot;
+                const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
+                cardinality += innerEntity[entityKey].cardinality!;
+                lookupNumber = (lookupNumber - prevRemaining) / prevCardinality;
+                prevRemaining = lookupNumber % cardinality;
+                if (prevRemaining === 0 && token.opt) {
+                    return example;
+                }
+                prevCardinality = cardinality;
+                const innerNumber = token.opt ? prevRemaining - 1 : prevRemaining;
+                let tokens = getExampleByNumber(defs, innerEntity[entityKey], innerNumber);
+                tokens = chatitoFormatPostProcess(tokens).map(t => {
+                    if (token.type === 'Slot') {
+                        if (innerEntity[entityKey].args) {
+                            t.args = innerEntity[entityKey].args;
+                        }
+                        t.value = t.value.trim();
+                        t.type = token.type;
+                        t.slot = token.value;
+                    }
+                    return t;
+                });
+                return example.concat(tokens);
+            }
+            throw Error(`Unknown token type: ${token.type}`);
+        },
+        [] as ISentenceTokens[]
+    );
+    return chatitoFormatPostProcess(resultTokens);
+};
+
+export const getAllExamples = (defs: IEntities, entity: IChatitoEntityAST) => {
+    const result: ISentenceTokens[][] = [];
+    for (let i = 0; i < entity.cardinality!; i++) {
+        result.push(getExampleByNumber(defs, entity, i));
+    }
+    return result;
+};
+
 const getExamples = (defs: IEntities, intent: IChatitoEntityAST, count: number, index: number, distribuition: 'smart' | 'even') => {
     const sentence = intent.inner[index];
     let paths: number[][] = [];
@@ -257,25 +315,24 @@ const getExamples = (defs: IEntities, intent: IChatitoEntityAST, count: number, 
             paths = paths.slice(0, count);
         }
     } else {
-        const maxCount = sentence.reduce((acc, token) => {
-            if (token.type === 'Text') {
-                return acc;
-            }
-            const entity = token.type === 'Alias' ? defs.Alias : defs.Slot;
-            const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
-            return acc * entity[entityKey].paths!.length;
-        }, 1);
-        if (count > maxCount * 0.9) {
-            paths = getPaths(defs, sentence, index);
-            if (count < paths.length) {
-                utils.shuffle(paths);
-                paths = paths.slice(0, count);
-            }
-        } else {
-            paths = getRandomPaths(defs, sentence, index, count);
-        }
+        // const maxCount = sentence.reduce((acc, token) => {
+        //     if (token.type === 'Text') {
+        //         return acc;
+        //     }
+        //     const entity = token.type === 'Alias' ? defs.Alias : defs.Slot;
+        //     const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
+        //     return acc * entity[entityKey].paths!.length;
+        // }, 1);
+        // if (count > maxCount * 0.9) {
+        //     paths = getPaths(defs, sentence, index);
+        //     if (count < paths.length) {
+        //         utils.shuffle(paths);
+        //         paths = paths.slice(0, count);
+        //     }
+        // } else {
+        paths = getRandomPaths(defs, sentence, index, count);
+        // }
     }
-    // console.log('WTF1.5', index, paths.length);
     return paths.map(path => chatitoFormatPostProcess(generateExample(defs, intent, path)));
 };
 
@@ -311,7 +368,7 @@ const generateExamples = (definitions: IEntities, intentKey: string, distribuiti
         const maxTargetExamples = Math.ceil((maxExamples * targetPerc) / 100);
         const minPerc = (targetPerc * 2) / 3;
         targetExamplesCountBySentences = maxExamplesCountBySentences.map(count => Math.floor((count * minPerc) / 100));
-        console.log('MIN BY SENTENCES:', targetExamplesCountBySentences);
+        // console.log('MIN BY SENTENCES:', targetExamplesCountBySentences);
         const minExamplesCount = targetExamplesCountBySentences.reduce((acc, count) => acc + count, 0);
         let remainingExamples = maxTargetExamples - minExamplesCount;
         const countsToIndexMap = maxExamplesCountBySentences.reduce(
@@ -324,7 +381,7 @@ const generateExamples = (definitions: IEntities, intentKey: string, distribuiti
         const counts = Object.keys(countsToIndexMap)
             .map(k => parseInt(k, 10))
             .sort((a, b) => a - b);
-        console.log('COUNTS:', counts);
+        // console.log('COUNTS:', counts);
         counts.forEach(count => {
             if (!remainingExamples) {
                 return;
@@ -350,8 +407,8 @@ const generateExamples = (definitions: IEntities, intentKey: string, distribuiti
             }
         });
     }
-    console.log('MAX BY SENTENCES:', maxExamplesCountBySentences);
-    console.log('TARGET BY SENTENCES:', targetExamplesCountBySentences);
+    // console.log('MAX BY SENTENCES:', maxExamplesCountBySentences);
+    // console.log('TARGET BY SENTENCES:', targetExamplesCountBySentences);
     return targetExamplesCountBySentences.reduce(
         (acc, count, index) => {
             const newAcc = acc.concat(getExamples(definitions, intent, count, index, distribuition));
@@ -359,6 +416,23 @@ const generateExamples = (definitions: IEntities, intentKey: string, distribuiti
         },
         [] as ISentenceTokens[][]
     );
+};
+
+const getRandomPath = (defs: IEntities, entity: IChatitoEntityAST) => {
+    let path = [Math.floor(Math.random() * entity.inner.length)];
+    entity.inner[path[0]].forEach(token => {
+        if (token.type === 'Text') {
+            return;
+        }
+        if (token.opt && Math.random() > 0.5) {
+            path.push(-1);
+            return;
+        }
+        const innerEntity = token.type === 'Alias' ? defs.Alias : defs.Slot;
+        const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
+        path = path.concat(getRandomPath(defs, innerEntity[entityKey]));
+    });
+    return path;
 };
 
 const getRandomPaths = (defs: IEntities, sentence: ISentenceTokens[], index: number, count: number) => {
@@ -376,8 +450,9 @@ const getRandomPaths = (defs: IEntities, sentence: ISentenceTokens[], index: num
             }
             const entity = token.type === 'Alias' ? defs.Alias : defs.Slot;
             const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
-            const innerPaths = entity[entityKey].paths!;
-            currentPath = currentPath.concat(innerPaths[Math.floor(Math.random() * innerPaths.length)]);
+            currentPath = currentPath.concat(getRandomPath(defs, entity[entityKey]));
+            // const innerPaths = entity[entityKey].paths!;
+            // currentPath = currentPath.concat(innerPaths[Math.floor(Math.random() * innerPaths.length)]);
         });
         if (stringPaths.some(path => path === currentPath.join())) {
             continue;
@@ -415,6 +490,79 @@ const calcPaths = (defs: IEntities, key: string, type: 'Alias' | 'Slot') => {
     const entity = defs[type][key];
     const paths = entity.inner.reduce((acc, sentence, index) => acc.concat(getPaths(defs, sentence, index)), [] as number[][]);
     entity.paths = paths;
+};
+
+const getCardinality = (defs: IEntities, sentence: ISentenceTokens[]) => {
+    return sentence.reduce((acc, token) => {
+        if (token.type === 'Text') {
+            return acc;
+        }
+        const entity = token.type === 'Alias' ? defs.Alias : defs.Slot;
+        const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
+
+        if (token.opt) {
+            return acc * (entity[entityKey].cardinality! + 1);
+        }
+        return acc * entity[entityKey].cardinality!;
+    }, 1);
+};
+
+const calcCardinality = (defs: IEntities, key: string, type: 'Alias' | 'Slot') => {
+    const entity = defs[type][key];
+    const cardinalities = entity.inner.map(sentence => getCardinality(defs, sentence));
+    entity.cardinality = cardinalities.reduce((acc, cardinality) => acc + cardinality, 0);
+    entity.cardinalities = cardinalities;
+    // console.log(`${key} cardinality:`, entity.cardinality);
+};
+
+const preCalcCardinality = (defs: IEntities) => {
+    const calculated = new Set<string>();
+    // cycle through uncalculated:
+    let aliases = [] as string[];
+    let slots = [] as string[];
+    do {
+        aliases = Object.keys(defs.Alias).filter(aliasKey => defs.Alias[aliasKey].cardinality === undefined);
+        slots = Object.keys(defs.Slot).filter(aliasKey => defs.Slot[aliasKey].cardinality === undefined);
+
+        aliases.forEach(aliasKey => {
+            const canCalc = !defs.Alias[aliasKey].inner.find(
+                tokens =>
+                    !!tokens.find(token => {
+                        if (token.type === 'Text') {
+                            return false;
+                        }
+                        const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
+                        const key = (token.type === 'Alias' ? 'a' : 's') + entityKey;
+                        return !calculated.has(key);
+                    })
+            );
+            if (canCalc) {
+                calcCardinality(defs, aliasKey, 'Alias');
+                calculated.add(`a${aliasKey}`);
+            }
+        });
+        slots.forEach(slotKey => {
+            const canCalc = !defs.Slot[slotKey].inner.find(
+                tokens =>
+                    !!tokens.find(token => {
+                        if (token.type === 'Text') {
+                            return false;
+                        }
+                        const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
+                        const key = (token.type === 'Alias' ? 'a' : 's') + entityKey;
+                        return !calculated.has(key);
+                    })
+            );
+            if (canCalc) {
+                calcCardinality(defs, slotKey, 'Slot');
+                calculated.add(`s${slotKey}`);
+            }
+        });
+        // console.log('entities left to count:', aliases.length + slots.length);
+        // console.log('aliases left to count:', aliases);
+        // console.log('slots left to count:', slots);
+        // console.log('calculated', calculated);
+    } while (aliases.length + slots.length > 0);
 };
 
 const preCalcPaths = (defs: IEntities) => {
@@ -460,9 +608,9 @@ const preCalcPaths = (defs: IEntities) => {
                 calculated.add(`s${slotKey}`);
             }
         });
-        console.log('entities left to count:', aliases.length + slots.length);
-        console.log('aliases left to count:', aliases);
-        console.log('slots left to count:', slots);
+        // console.log('entities left to count:', aliases.length + slots.length);
+        // console.log('aliases left to count:', aliases);
+        // console.log('slots left to count:', slots);
         // console.log('calculated', calculated);
     } while (aliases.length + slots.length > 0);
 };
@@ -491,10 +639,10 @@ const addMissingAliases = (defs: IEntities) => {
     }
 };
 
-export const datasetFromAST = async (ast: IChatitoEntityAST[], writterFn: IUtteranceWriter) => {
+export const definitionsFromAST = (ast: IChatitoEntityAST[]) => {
     const operatorDefinitions: IEntities = { Intent: {}, Slot: {}, Alias: {} };
     if (!ast || !ast.length) {
-        return;
+        return operatorDefinitions;
     }
     ast.forEach(od => {
         let entity: IEntityDef;
@@ -520,10 +668,16 @@ export const datasetFromAST = async (ast: IChatitoEntityAST[], writterFn: IUtter
         throw new Error('No actions found');
     }
     addMissingAliases(operatorDefinitions);
-    console.log('STARTED paths calculation');
-    preCalcPaths(operatorDefinitions);
-    console.log('FINISHED paths calculation');
-    for (const intentKey of intentKeys) {
+    // preCalcPaths(operatorDefinitions);
+    // console.log('STARTED cardinality calculation');
+    preCalcCardinality(operatorDefinitions);
+    // console.log('FINISHED cardinality calculation');
+    return operatorDefinitions;
+};
+
+export const datasetFromAST = async (ast: IChatitoEntityAST[], writterFn: IUtteranceWriter) => {
+    const operatorDefinitions = definitionsFromAST(ast);
+    for (const intentKey of Object.keys(operatorDefinitions.Intent)) {
         const entityArgs = operatorDefinitions.Intent[intentKey].args;
         if (entityArgs && (entityArgs.distribution === 'smart' || entityArgs.distribution === 'even')) {
             generateExamples(operatorDefinitions, intentKey, entityArgs.distribution).map(example => writterFn(example, intentKey, true));

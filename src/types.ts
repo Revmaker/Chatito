@@ -24,6 +24,8 @@ export interface IChatitoEntityAST {
     key: string;
     inner: ISentenceTokens[][];
     paths?: number[][];
+    cardinality?: number;
+    cardinalities?: number[];
     location?: IASTLocation;
     variation?: string | null;
     args?: { [key: string]: string };
