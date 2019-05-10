@@ -271,10 +271,10 @@ const getExampleByNumber = (defs: IEntities, entity: IChatitoEntityAST, combinat
                 cardinality += innerEntity[entityKey].cardinality!;
                 lookupNumber = (lookupNumber - prevRemaining) / prevCardinality;
                 prevRemaining = lookupNumber % cardinality;
+                prevCardinality = cardinality;
                 if (prevRemaining === 0 && token.opt) {
                     return example;
                 }
-                prevCardinality = cardinality;
                 const innerNumber = token.opt ? prevRemaining - 1 : prevRemaining;
                 let tokens = getExampleByNumber(defs, innerEntity[entityKey], innerNumber);
                 tokens = chatitoFormatPostProcess(tokens).map(t => {
