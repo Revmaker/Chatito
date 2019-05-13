@@ -34,7 +34,7 @@ const chatitoFilesFromDir = async (startPath: string, cb: (filename: string) => 
 };
 
 const adapterAccumulator = (format: 'default' | 'rasa' | 'snips' | 'dialogflow', formatOptions?: any) => {
-    const trainingDataset: dialogflow.IDialogflowDataset = { data: [], synonyms: {} };
+    const trainingDataset: snips.ISnipsDataset | rasa.IRasaDataset | dialogflow.IDialogflowDataset | {} = {};
     const testingDataset: any = {};
     const adapterHandler = adapters[format];
     if (!adapterHandler) {
@@ -54,56 +54,17 @@ const adapterAccumulator = (format: 'default' | 'rasa' | 'snips' | 'dialogflow',
                 fs.mkdirSync(outputPath);
             }
 
-            const examples = trainingDataset.data.length;
-            let index = 1;
-            const perFile = 2000;
-            while ((index - 1) * perFile < examples) {
-                const trainingJsonFileName = argv.trainingFileName || `${format}_dataset_training_${index}.json`;
-                const trainingJsonFilePath = path.resolve(outputPath, trainingJsonFileName);
-                fs.writeFileSync(
-                    trainingJsonFilePath,
-                    JSON.stringify(trainingDataset.data.slice((index - 1) * perFile, index * perFile), undefined, 2)
-                );
-                // tslint:disable-next-line:no-console
-                console.log(`Saved training dataset: ${trainingJsonFilePath}`);
-                index += 1;
+            // Use adapter's own saver if exists
+            if ('save' in adapterHandler) {
+                adapterHandler.save(trainingDataset as dialogflow.IDialogflowDataset, testingDataset, outputPath, formatOptions);
+                return;
             }
-            // merge synonyms
-            // load synonyms
-            const agentDir = formatOptions.agentDir;
-            Object.keys(trainingDataset.synonyms)
-                .filter(entity => !entity.startsWith('sys.'))
-                .forEach(entity => {
-                    const entriesFile = path.resolve(`${agentDir}/entities/${entity}_entries_en.json`);
-                    const entries: Array<{ value: string; synonyms: string[] }> = JSON.parse(fs.readFileSync(entriesFile, 'utf8'));
-                    Object.keys(trainingDataset.synonyms[entity]).forEach(entry => {
-                        const synonyms = trainingDataset.synonyms[entity][entry];
-                        // console.log(`Our synonyms for ${entry}`, synonyms);
-                        const i = entries.findIndex(e => e.value === entry);
-                        if (i === -1) {
-                            // console.log(`They don't have synonyms for ${entry}`);
-                            entries.push({
-                                value: entry,
-                                synonyms
-                            });
-                        } else {
-                            // console.log(`Their synonyms for ${entry}`, entries[i].synonyms);
-                            synonyms.forEach(synonym => {
-                                if (entries[i].synonyms.indexOf(synonym) === -1) {
-                                    entries[i].synonyms.push(synonym);
-                                }
-                            });
-                            entries[i].synonyms.forEach(synonym => {
-                                if (synonyms.indexOf(synonym) === -1) {
-                                    // tslint:disable-next-line:no-console
-                                    console.log(`Extra synonym for ${entity}: ${entry} <-`, synonym);
-                                }
-                            });
-                        }
-                    });
-                    fs.writeFileSync(entriesFile, JSON.stringify(entries, undefined, 2));
-                    // console.log(entries);
-                });
+
+            const trainingJsonFileName = argv.trainingFileName || `${format}_dataset_training.json`;
+            const trainingJsonFilePath = path.resolve(outputPath, trainingJsonFileName);
+            fs.writeFileSync(trainingJsonFilePath, JSON.stringify(trainingDataset));
+            // tslint:disable-next-line:no-console
+            console.log(`Saved training dataset: ${trainingJsonFilePath}`);
 
             if (Object.keys(testingDataset).length) {
                 const testingFileName = argv.testingFileName || `${format}_dataset_testing.json`;
