@@ -182,7 +182,7 @@ export function save(trainingDataset: IDialogflowDataset, testingDataset: IDialo
         });
 }
 
-export async function adapter(dsl: string, formatOptions?: any) {
+export async function adapter(dsl: string, formatOptions?: any, importer?: gen.IFileImporter, currentPath?: string) {
     const training = { intents: {}, synonyms: {} } as IDialogflowDataset;
     const testing = { intents: {}, synonyms: {} } as IDialogflowDataset;
     const utteranceWriter = (utterance: ISentenceTokens[], intentKey: string, isTrainingExample: boolean) => {
@@ -224,8 +224,11 @@ export async function adapter(dsl: string, formatOptions?: any) {
         );
         writeTo[intent].data.push(example);
     };
-    await gen.datasetFromString(dsl, utteranceWriter);
-    const defs = gen.definitionsFromAST(gen.astFromString(dsl));
+    await gen.datasetFromString(dsl, utteranceWriter, importer, currentPath);
+    const defs = gen.definitionsFromAST(gen.astFromString(dsl), importer, currentPath);
+    if (!defs) {
+        return { training, testing };
+    }
     Object.keys(defs.Slot).forEach(key => {
         const slot = defs.Slot[key];
         if (!slot.args || !slot.args.entity) {
