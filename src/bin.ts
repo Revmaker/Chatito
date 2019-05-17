@@ -2,6 +2,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as dialogflow from './adapters/dialogflow';
+import * as luis from './adapters/luis';
 import * as rasa from './adapters/rasa';
 import * as snips from './adapters/snips';
 import * as web from './adapters/web';
@@ -10,7 +11,7 @@ import * as utils from './utils';
 // tslint:disable-next-line:no-var-requires
 const argv = require('minimist')(process.argv.slice(2));
 
-const adapters = { default: web, rasa, snips, dialogflow };
+const adapters = { default: web, rasa, snips, luis, dialogflow };
 
 const workingDirectory = process.cwd();
 const getFileWithPath = (filename: string) => path.resolve(workingDirectory, filename);
@@ -33,8 +34,20 @@ const chatitoFilesFromDir = async (startPath: string, cb: (filename: string) => 
     }
 };
 
+const importer = (fromPath: string, importFile: string) => {
+    const filePath = path.resolve(path.dirname(fromPath), importFile);
+    if (path.extname(filePath) !== '.chatito') {
+        throw new Error('Only files with .chatito extension can be imported');
+    }
+    if (!fs.existsSync(filePath)) {
+        throw new Error(`Can't import ${filePath}`);
+    }
+    const dsl = fs.readFileSync(filePath, 'utf8');
+    return { filePath, dsl };
+};
+
 const adapterAccumulator = (format: 'default' | 'rasa' | 'snips' | 'dialogflow', formatOptions?: any) => {
-    const trainingDataset: snips.ISnipsDataset | rasa.IRasaDataset | dialogflow.IDialogflowDataset | {} = {};
+    const trainingDataset: snips.ISnipsDataset | rasa.IRasaDataset | luis.ILuisDataset | dialogflow.IDialogflowDataset | {} = {};
     const testingDataset: any = {};
     const adapterHandler = adapters[format];
     if (!adapterHandler) {
@@ -45,7 +58,7 @@ const adapterAccumulator = (format: 'default' | 'rasa' | 'snips' | 'dialogflow',
             // tslint:disable-next-line:no-console
             console.log(`Processing file: ${fullFilenamePath}`);
             const dsl = fs.readFileSync(fullFilenamePath, 'utf8');
-            const { training, testing } = await adapterHandler.adapter(dsl, formatOptions);
+            const { training, testing } = await adapterHandler.adapter(dsl, formatOptions, importer, fullFilenamePath);
             utils.mergeDeep(trainingDataset, training);
             utils.mergeDeep(testingDataset, testing);
         },
@@ -85,7 +98,7 @@ const adapterAccumulator = (format: 'default' | 'rasa' | 'snips' | 'dialogflow',
     }
     const configFile = argv._[0];
     const format = (argv.format || 'default').toLowerCase();
-    if (['default', 'rasa', 'snips', 'dialogflow'].indexOf(format) === -1) {
+    if (['default', 'rasa', 'snips', 'luis', 'dialogflow'].indexOf(format) === -1) {
         // tslint:disable-next-line:no-console
         console.error(`Invalid format argument: ${format}`);
         process.exit(1);

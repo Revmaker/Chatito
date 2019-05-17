@@ -1,5 +1,4 @@
-import * as utils from './utils';
-
+import { Chance } from 'chance';
 import {
     IChatitoCache,
     IChatitoEntityAST,
@@ -10,9 +9,11 @@ import {
     IStatCache,
     IUtteranceWriter
 } from './types';
+import * as utils from './utils';
 
 // tslint:disable-next-line:no-var-requires
 const chatito = require('../parser/chatito') as IChatitoParser;
+const chance = new Chance();
 
 const chatitoFormatPostProcess = (data: ISentenceTokens[]) => {
     const arr = data.reduce(
@@ -33,10 +34,10 @@ const chatitoFormatPostProcess = (data: ISentenceTokens[]) => {
             if (i === arrShadow.length - 1) {
                 // if its the last token of a sentence
                 // remove empty strings at the end
-                if (!accumulator[accumulator.length - 1].value.trim()) {
-                    accumulator.pop();
-                }
                 if (accumulator.length) {
+                    if (!accumulator[accumulator.length - 1].value.trim()) {
+                        accumulator.pop();
+                    }
                     accumulator[accumulator.length - 1] = Object.assign({}, accumulator[accumulator.length - 1], {
                         value: accumulator[accumulator.length - 1].value.replace(/\s+$/g, '')
                     });
@@ -51,6 +52,9 @@ const chatitoFormatPostProcess = (data: ISentenceTokens[]) => {
             value: arr[0].value.replace(/^\s+/, '')
         });
     }
+    if (!arr.length) {
+        throw new Error(`Some sentence generated an empty string. Can't map empty to an intent.`);
+    }
     return arr;
 };
 
@@ -60,7 +64,7 @@ const getVariationsFromEntity = async <T>(
     ed: IChatitoEntityAST,
     entities: IEntities,
     optional: boolean,
-    cache: IChatitoCache,
+    cache: IChatitoCache
 ): Promise<ISentenceTokens[]> => {
     // if this entity is a slot variation, add that as the key
     const variationKey = ed.variation ? `#${ed.variation}` : '';
@@ -69,65 +73,62 @@ const getVariationsFromEntity = async <T>(
     if (!cacheStats) {
         // if the entity is not cache, create an empty cache for it
         const counts: IChatitoCache[] = [];
-        const totalCounts: number[] = [];
-        const maxCounts: number[] = [];
+        const maxCounts: number[] = []; // calcs the max possible utterancees for each sentence
+        const definedSentenceProbabilities: Array<number | null> = []; // the posibility operators defined for sentences
+        const indexesOfSentencesWithNullProbability: number[] = [];
+        let sumOfTotalProbabilitiesDefined = 0;
         for (const c of ed.inner) {
             // get counts for each of the sentences inside the entity
             counts.push(new Map());
-            totalCounts.push(0);
             let mxc = utils.maxSentencesForSentence(entities)(c);
             if (optional) {
                 mxc++;
             }
             maxCounts.push(mxc);
+            if (c.probability === null) {
+                indexesOfSentencesWithNullProbability.push(definedSentenceProbabilities.length);
+                definedSentenceProbabilities.push(null);
+            } else {
+                const prob = parseInt(c.probability || '', 10);
+                if (!Number.isInteger(prob)) {
+                    throw new Error(`Probability "${c.probability}" must be an integer value. At ${cacheKey}`);
+                }
+                if (prob < 1 || prob > 100) {
+                    throw new Error(`Probability "${c.probability}" must be from 1 to 100. At ${cacheKey}`);
+                }
+                sumOfTotalProbabilitiesDefined += prob;
+                definedSentenceProbabilities.push(prob);
+            }
         }
-        const currentEntityCache: IStatCache = {
-            counts,
-            maxCounts,
-            optional,
-            optionalCounts: 0,
-            totalCounts
-        };
+        if (sumOfTotalProbabilitiesDefined && sumOfTotalProbabilitiesDefined > 100) {
+            throw new Error(
+                `The sum of sentence probabilities (${sumOfTotalProbabilitiesDefined}) for an entity can't be higher than 100%. At ${cacheKey}`
+            );
+        }
+        // get the sum of all defined posibility operators inside the entity and validate it
+        const totalMaxCountsToShareBetweenNullProbSent =
+            indexesOfSentencesWithNullProbability.map(i => maxCounts[i]).reduce((p, n) => (p || 0) + (n || 0), 0) || 0;
+        // calculate the split of remaining probability for sentences that don't define them
+        // const realProbabilities = maxCounts.map(m => (m * 100) / sumOfTotalMax);
+        const probabilities = definedSentenceProbabilities.map((p, i) =>
+            p === null
+                ? (((maxCounts[i] * 100) / totalMaxCountsToShareBetweenNullProbSent) * (100 - sumOfTotalProbabilitiesDefined)) / 100
+                : p
+        );
+        const currentEntityCache: IStatCache = { counts, maxCounts, optional, probabilities };
         cache.set(cacheKey, currentEntityCache);
         cacheStats = cache.get(cacheKey) as IStatCache;
     }
-    // each sentence generation should use the ratio between the cache counts and the max possible
-    // combinations, so that generation follows the probability distribuition avoiding repetitions
-    let max = utils.maxSentencesForEntity(ed, entities);
-    if (optional) {
-        max++;
+    // NOTE: if an entity has 5 sentences we add one (the optional empty sentence) and get that probability
+    const optionalProb = 100 / (cacheStats.probabilities.length + 1);
+    let sentenceIndex = chance.weighted(Array.from(cacheStats.probabilities.keys()), cacheStats.probabilities);
+    if (cacheStats.optional && chance.bool({ likelihood: optionalProb })) {
+        sentenceIndex = -1;
     }
-    const totalAccumulated = cacheStats.totalCounts.reduce((p, n) => p + n) + cacheStats.optionalCounts;
-    if (totalAccumulated === max) {
-        // reset cache counts if max is reached
-        cacheStats.totalCounts = new Array(cacheStats.totalCounts.length).fill(0);
-        cacheStats.optionalCounts = 0;
-    }
-    const allCounts = cacheStats.maxCounts.map((c, i) => {
-        return cacheStats.totalCounts[i] / cacheStats.maxCounts[i];
-    });
-    let min = Math.min.apply(Math, allCounts);
-    if (cacheStats.optional && cacheStats.optionalCounts / max < min / max) {
-        min = min / max;
-    }
-    // randomly select an index from those that have the same probabilities to be selected
-    const counterIndexes: number[] = [];
-    allCounts.forEach((c: number, i) => {
-        if (c <= min || !c) {
-            counterIndexes.push(i);
-        }
-    });
-    if (cacheStats.optional && cacheStats.optionalCounts <= min / max) {
-        counterIndexes.push(-1);
-    }
-    utils.shuffle(counterIndexes);
-    const sentenceIndex = counterIndexes[0];
     if (sentenceIndex === -1) {
-        cacheStats.optionalCounts++;
-        return []; // increment optional and return empty if optional is randomly selected
+        return [];
     }
-    cacheStats.totalCounts[sentenceIndex]++;
-    const sentence = ed.inner[sentenceIndex];
+    const sentence = ed.inner[sentenceIndex].sentence;
     let accumulator: ISentenceTokens[] = [];
     // For slots where a sentence is composed of only one alias, we add the synonym tag,
     // to denote that the generated alias is a synonym of its alias name
@@ -165,10 +166,39 @@ const getVariationsFromEntity = async <T>(
     return accumulator;
 };
 
+export type IFileImporter = (
+    fromPath: string,
+    importFile: string
+) => {
+    filePath: string;
+    dsl: string;
+};
+
 export const astFromString = (str: string) => chatito.parse(str);
-export const datasetFromString = (str: string, writterFn: IUtteranceWriter) => {
+export const datasetFromString = (str: string, writterFn: IUtteranceWriter, importer?: IFileImporter, currentPath?: string) => {
     const ast = astFromString(str);
-    return datasetFromAST(ast, writterFn);
+    return datasetFromAST(ast, writterFn, importer, currentPath);
+};
+
+export const getImports = (from: string, to: string, importer: IFileImporter) => {
+    const fileContent = importer(from, to);
+    if (!fileContent || !fileContent.dsl) {
+        throw new Error(`Failed importing ${to}`);
+    }
+    try {
+        const importAst = astFromString(fileContent.dsl);
+        let outAst: IChatitoEntityAST[] = [];
+        importAst.forEach(ett => {
+            if (ett.type === 'ImportFile' && ett.value) {
+                outAst = [...outAst, ...getImports(fileContent.filePath, ett.value, importer)];
+            } else if (ett.type === 'AliasDefinition' || ett.type === 'SlotDefinition') {
+                outAst = [...outAst, ett];
+            }
+        });
+        return outAst;
+    } catch (e) {
+        throw new Error(`Failed importing ${to}. ${e.message} - ${JSON.stringify(e.location)}`);
+    }
 };
 
 // const getCombinationsPaths = (tokens: ISentenceTokens[], defs: IEntities, path: number[] = []): number[][] => {
@@ -216,7 +246,7 @@ export const datasetFromString = (str: string, writterFn: IUtteranceWriter) => {
 
 const generateExample = (defs: IEntities, entity: IChatitoEntityAST, path: number[]) => {
     const sentenceIndex = path.shift();
-    const sentence = entity.inner[sentenceIndex!];
+    const sentence = entity.inner[sentenceIndex!].sentence;
     const parts: ISentenceTokens[] = sentence.reduce(
         (acc, token) => {
             if (token.type === 'Slot' || token.type === 'Alias') {
@@ -256,7 +286,7 @@ const getExampleByNumber = (defs: IEntities, entity: IChatitoEntityAST, combinat
         lookupNumber -= cardinality;
         return false;
     });
-    const sentence = entity.inner[sentenceIndex];
+    const sentence = entity.inner[sentenceIndex].sentence;
     let prevCardinality = 1;
     let prevRemaining = 0;
     const resultTokens = sentence.reduce(
@@ -306,7 +336,7 @@ export const getAllExamples = (defs: IEntities, entity: IChatitoEntityAST) => {
 };
 
 const getExamples = (defs: IEntities, intent: IChatitoEntityAST, count: number, index: number, distribuition: 'smart' | 'even') => {
-    const sentence = intent.inner[index];
+    const sentence = intent.inner[index].sentence;
     let paths: number[][] = [];
     if (distribuition === 'smart') {
         paths = getPaths(defs, sentence, index);
@@ -420,7 +450,7 @@ const generateExamples = (definitions: IEntities, intentKey: string, distribuiti
 
 const getRandomPath = (defs: IEntities, entity: IChatitoEntityAST) => {
     let path = [Math.floor(Math.random() * entity.inner.length)];
-    entity.inner[path[0]].forEach(token => {
+    entity.inner[path[0]].sentence.forEach(token => {
         if (token.type === 'Text') {
             return;
         }
@@ -488,7 +518,7 @@ const getPaths = (defs: IEntities, sentence: ISentenceTokens[], index: number) =
 
 const calcPaths = (defs: IEntities, key: string, type: 'Alias' | 'Slot') => {
     const entity = defs[type][key];
-    const paths = entity.inner.reduce((acc, sentence, index) => acc.concat(getPaths(defs, sentence, index)), [] as number[][]);
+    const paths = entity.inner.reduce((acc, sentence, index) => acc.concat(getPaths(defs, sentence.sentence, index)), [] as number[][]);
     entity.paths = paths;
 };
 
@@ -509,7 +539,7 @@ const getCardinality = (defs: IEntities, sentence: ISentenceTokens[]) => {
 
 const calcCardinality = (defs: IEntities, key: string, type: 'Alias' | 'Slot') => {
     const entity = defs[type][key];
-    const cardinalities = entity.inner.map(sentence => getCardinality(defs, sentence));
+    const cardinalities = entity.inner.map(sentence => getCardinality(defs, sentence.sentence));
     entity.cardinality = cardinalities.reduce((acc, cardinality) => acc + cardinality, 0);
     entity.cardinalities = cardinalities;
     // console.log(`${key} cardinality:`, entity.cardinality);
@@ -526,8 +556,8 @@ const preCalcCardinality = (defs: IEntities) => {
 
         aliases.forEach(aliasKey => {
             const canCalc = !defs.Alias[aliasKey].inner.find(
-                tokens =>
-                    !!tokens.find(token => {
+                sentence =>
+                    !!sentence.sentence.find(token => {
                         if (token.type === 'Text') {
                             return false;
                         }
@@ -543,8 +573,8 @@ const preCalcCardinality = (defs: IEntities) => {
         });
         slots.forEach(slotKey => {
             const canCalc = !defs.Slot[slotKey].inner.find(
-                tokens =>
-                    !!tokens.find(token => {
+                sentence =>
+                    !!sentence.sentence.find(token => {
                         if (token.type === 'Text') {
                             return false;
                         }
@@ -576,8 +606,8 @@ const preCalcPaths = (defs: IEntities) => {
 
         aliases.forEach(aliasKey => {
             const canCalc = !defs.Alias[aliasKey].inner.find(
-                tokens =>
-                    !!tokens.find(token => {
+                sentence =>
+                    !!sentence.sentence.find(token => {
                         if (token.type === 'Text') {
                             return false;
                         }
@@ -593,8 +623,8 @@ const preCalcPaths = (defs: IEntities) => {
         });
         slots.forEach(slotKey => {
             const canCalc = !defs.Slot[slotKey].inner.find(
-                tokens =>
-                    !!tokens.find(token => {
+                sentence =>
+                    !!sentence.sentence.find(token => {
                         if (token.type === 'Text') {
                             return false;
                         }
@@ -619,8 +649,8 @@ const addMissingAliases = (defs: IEntities) => {
     const aliases = new Set<string>();
     for (const entities of [defs.Alias, defs.Slot, defs.Intent]) {
         for (const key of Object.keys(entities)) {
-            entities[key].inner.forEach(tokens => {
-                tokens.forEach(token => {
+            entities[key].inner.forEach(sentence => {
+                sentence.sentence.forEach(token => {
                     if (token.type === 'Alias') {
                         aliases.add(token.value);
                     }
@@ -631,7 +661,7 @@ const addMissingAliases = (defs: IEntities) => {
     for (const alias of aliases) {
         if (!defs.Alias[alias]) {
             defs.Alias[alias] = {
-                inner: [[{ value: alias, type: 'Text' }]],
+                inner: [{ sentence: [{ value: alias, type: 'Text' }], probability: '' }],
                 key: alias,
                 type: 'AliasDefinition'
             };
@@ -639,11 +669,20 @@ const addMissingAliases = (defs: IEntities) => {
     }
 };
 
-export const definitionsFromAST = (ast: IChatitoEntityAST[]) => {
+export const definitionsFromAST = (initialAst: IChatitoEntityAST[], importHandler?: IFileImporter, currPath?: string) => {
     const operatorDefinitions: IEntities = { Intent: {}, Slot: {}, Alias: {} };
-    if (!ast || !ast.length) {
-        return operatorDefinitions;
+    if (!initialAst || !initialAst.length) {
+        return;
     }
+    const importer = importHandler ? importHandler : () => ({ filePath: '', dsl: '' });
+    const currentPath = currPath ? currPath : '';
+    // gete imports first
+    let ast: IChatitoEntityAST[] = [...initialAst];
+    initialAst.forEach(od => {
+        if (od.type === 'ImportFile' && od.value) {
+            ast = [...ast, ...getImports(currentPath, od.value, importer)];
+        }
+    });
     ast.forEach(od => {
         let entity: IEntityDef;
         if (od.type === 'IntentDefinition') {
@@ -652,7 +691,7 @@ export const definitionsFromAST = (ast: IChatitoEntityAST[]) => {
             entity = operatorDefinitions.Slot;
         } else if (od.type === 'AliasDefinition') {
             entity = operatorDefinitions.Alias;
-        } else if (od.type === 'Comment') {
+        } else if (od.type === 'Comment' || od.type === 'ImportFile') {
             return; // skip comments
         } else {
             throw new Error(`Unknown definition definition for ${od.type}`);
@@ -665,7 +704,7 @@ export const definitionsFromAST = (ast: IChatitoEntityAST[]) => {
     });
     const intentKeys = Object.keys(operatorDefinitions.Intent);
     if (!intentKeys || !intentKeys.length) {
-        throw new Error('No actions found');
+        return;
     }
     addMissingAliases(operatorDefinitions);
     // preCalcPaths(operatorDefinitions);
@@ -675,8 +714,16 @@ export const definitionsFromAST = (ast: IChatitoEntityAST[]) => {
     return operatorDefinitions;
 };
 
-export const datasetFromAST = async (ast: IChatitoEntityAST[], writterFn: IUtteranceWriter) => {
-    const operatorDefinitions = definitionsFromAST(ast);
+export const datasetFromAST = async (
+    initialAst: IChatitoEntityAST[],
+    writterFn: IUtteranceWriter,
+    importHandler?: IFileImporter,
+    currPath?: string
+) => {
+    const operatorDefinitions = definitionsFromAST(initialAst, importHandler, currPath);
+    if (!operatorDefinitions) {
+        return;
+    }
     for (const intentKey of Object.keys(operatorDefinitions.Intent)) {
         const entityArgs = operatorDefinitions.Intent[intentKey].args;
         if (entityArgs && (entityArgs.distribution === 'smart' || entityArgs.distribution === 'even')) {
@@ -690,6 +737,7 @@ export const datasetFromAST = async (ast: IChatitoEntityAST[], writterFn: IUtter
         let trainingN = maxIntentExamples;
         let testingN = 0;
         let generatedTrainingExamplesCount = 0;
+        let generatedTestingExamplesCount = 0;
         if (entityArgs) {
             if (entityArgs.training) {
                 trainingN = parseInt(entityArgs.training, 10);
@@ -725,9 +773,20 @@ export const datasetFromAST = async (ast: IChatitoEntityAST[], writterFn: IUtter
             const utteranceString = utterance.reduce((p, n) => p + n.value, '');
             if (!collitionsCache[utteranceString]) {
                 collitionsCache[utteranceString] = true;
-                writterFn(utterance, intentKey, generatedTrainingExamplesCount < trainingN);
+                const completedTraining = generatedTrainingExamplesCount >= trainingN;
+                const completedTesting = generatedTestingExamplesCount >= testingN;
+                let isTrainingExample = !completedTraining;
+                if (!completedTraining && !completedTesting) {
+                    // reference: https://stackoverflow.com/questions/44263229/generate-a-random-boolean-70-true-30-false
+                    isTrainingExample = Math.random() < 0.7;
+                }
+                writterFn(utterance, intentKey, isTrainingExample);
                 maxIntentExamples--;
-                generatedTrainingExamplesCount++;
+                if (isTrainingExample) {
+                    generatedTrainingExamplesCount++;
+                } else {
+                    generatedTestingExamplesCount++;
+                }
             } else {
                 duplicatesCounter++;
                 // note: trick to make all combinations for small datasets, but avoid them for large ones
