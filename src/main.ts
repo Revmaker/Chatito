@@ -661,7 +661,7 @@ const addMissingAliases = (defs: IEntities) => {
     for (const alias of aliases) {
         if (!defs.Alias[alias]) {
             defs.Alias[alias] = {
-                inner: [{ sentence: [{ value: alias, type: 'Text' }], probability: '' }],
+                inner: [{ sentence: [{ value: alias, type: 'Text' }], probability: null }],
                 key: alias,
                 type: 'AliasDefinition'
             };
