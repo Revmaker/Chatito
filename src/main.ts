@@ -201,49 +201,6 @@ export const getImports = (from: string, to: string, importer: IFileImporter) =>
     }
 };
 
-// const getCombinationsPaths = (tokens: ISentenceTokens[], defs: IEntities, path: number[] = []): number[][] => {
-//     const paths = [] as number[][];
-//     tokens.forEach((token) => {
-//         if (token.type === 'Alias' || token.type === 'Slot') {
-//             const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
-//             if (token.opt) {
-//                 paths.push([...path, -1]);
-//             }
-//             // const innerPaths = defs[token.type][entityKey].inner.map((sentence, index) => getCombinationsPaths(sentence, defs, [...path, index]));
-//             paths.concat(
-//                 defs[token.type][entityKey].inner.reduce((acc, sentence, index) => acc.concat(
-//                     getCombinationsPaths(sentence, defs, [...path, index]),
-//                 ), [] as number[][])
-//             );
-//         }
-//     });
-//     // return tokens.map((token) => {
-//     //     if (token.type === 'Text') {
-//     //         return [1];
-//     //     }
-//     //     if (token.type === 'Alias') {
-//     //         return defs.Alias[token.value].inner.map((sentence) => getCombinationsPaths(sentence, defs));
-//     //     } else {
-//     //         const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
-//     //         return defs.Slot[entityKey].inner.map((sentence) => getCombinationsPaths(sentence, defs));
-//     //     }
-//     // });
-// }
-
-// const getInnerExample = (defs: IEntities, entity: IChatitoEntityAST, path: number[]) => {
-//     const sentenceIndex = path.shift();
-//     const sentence = entity.inner[sentenceIndex!];
-//     const parts: ISentenceTokens[] = sentence.reduce((acc, token) => {
-//         if (token.type === 'Slot' || token.type === 'Alias') {
-//             const entity = token.type === 'Alias' ? defs.Alias : defs.Slot;
-//             const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
-//             return acc.concat(getInnerExample(defs, entity[entityKey], path))
-//         }
-//         return acc.concat([token]);
-//     }, [] as ISentenceTokens[]);
-//     return parts;
-// }
-
 const generateExample = (defs: IEntities, entity: IChatitoEntityAST, path: number[]) => {
     const sentenceIndex = path.shift();
     const sentence = entity.inner[sentenceIndex!].sentence;
@@ -726,10 +683,6 @@ export const datasetFromAST = async (
     }
     for (const intentKey of Object.keys(operatorDefinitions.Intent)) {
         const entityArgs = operatorDefinitions.Intent[intentKey].args;
-        if (entityArgs && (entityArgs.distribution === 'smart' || entityArgs.distribution === 'even')) {
-            generateExamples(operatorDefinitions, intentKey, entityArgs.distribution).map(example => writterFn(example, intentKey, true));
-            continue;
-        }
         // and for all tokens inside the sentence
         const maxPossibleCombinations = utils.maxSentencesForEntity(operatorDefinitions.Intent[intentKey], operatorDefinitions);
         let maxIntentExamples = maxPossibleCombinations; // counter that will change
