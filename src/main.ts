@@ -77,6 +77,7 @@ const getVariationsFromEntity = async <T>(
         const definedSentenceProbabilities: Array<number | null> = []; // the posibility operators defined for sentences
         const indexesOfSentencesWithNullProbability: number[] = [];
         let sumOfTotalProbabilitiesDefined = 0;
+        const evenProbability = 100 / ed.inner.length;
         for (const c of ed.inner) {
             // get counts for each of the sentences inside the entity
             counts.push(new Map());
@@ -110,11 +111,16 @@ const getVariationsFromEntity = async <T>(
             indexesOfSentencesWithNullProbability.map(i => maxCounts[i]).reduce((p, n) => (p || 0) + (n || 0), 0) || 0;
         // calculate the split of remaining probability for sentences that don't define them
         // const realProbabilities = maxCounts.map(m => (m * 100) / sumOfTotalMax);
-        const probabilities = definedSentenceProbabilities.map((p, i) =>
-            p === null
-                ? (((maxCounts[i] * 100) / totalMaxCountsToShareBetweenNullProbSent) * (100 - sumOfTotalProbabilitiesDefined)) / 100
-                : p
-        );
+        let probabilities = [];
+        if (ed.args && ed.args.distribution && ed.args.distribution === 'even') {
+            probabilities = Array(ed.inner.length).fill(evenProbability);
+        } else {
+            probabilities = definedSentenceProbabilities.map((p, i) =>
+                p === null
+                    ? (((maxCounts[i] * 100) / totalMaxCountsToShareBetweenNullProbSent) * (100 - sumOfTotalProbabilitiesDefined)) / 100
+                    : p
+            );
+        }
         const currentEntityCache: IStatCache = { counts, maxCounts, optional, probabilities };
         cache.set(cacheKey, currentEntityCache);
         cacheStats = cache.get(cacheKey) as IStatCache;
