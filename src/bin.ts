@@ -1,36 +1,30 @@
 #!/usr/bin/env node
 import * as fs from 'fs';
 import * as path from 'path';
-import * as dialogflow from './adapters/dialogflow';
-import * as luis from './adapters/luis';
-import * as rasa from './adapters/rasa';
-import * as snips from './adapters/snips';
-import * as web from './adapters/web';
-import * as utils from './utils';
+import { adapters } from './adapters';
+import { defaultAccumulator } from './adapters/accumulators';
 
 // tslint:disable-next-line:no-var-requires
 const argv = require('minimist')(process.argv.slice(2));
 
-const adapters = { default: web, rasa, snips, luis, dialogflow };
-
 const workingDirectory = process.cwd();
 const getFileWithPath = (filename: string) => path.resolve(workingDirectory, filename);
 
-const chatitoFilesFromDir = async (startPath: string, cb: (filename: string) => Promise<void>) => {
+const collectChatitoFiles = (startPath: string, filenames: string[]) => {
     if (!fs.existsSync(startPath)) {
         // tslint:disable-next-line:no-console
-        console.error(`Invalid directory: ${startPath}`);
+        console.error(`No such file or directory: ${startPath}`);
         process.exit(1);
     }
-    const files = fs.readdirSync(startPath);
-    for (const file of files) {
-        const filename = path.join(startPath, file);
-        const stat = fs.lstatSync(filename);
-        if (stat.isDirectory()) {
-            await chatitoFilesFromDir(filename, cb);
-        } else if (/\.chatito$/.test(filename)) {
-            await cb(filename);
+    const stat = fs.lstatSync(startPath);
+    if (stat.isDirectory()) {
+        const files = fs.readdirSync(startPath);
+        for (const file of files) {
+            const filename = path.join(startPath, file);
+            collectChatitoFiles(filename, filenames);
         }
+    } else if (/\.chatito$/.test(startPath)) {
+        filenames.push(startPath);
     }
 };
 
@@ -46,50 +40,6 @@ const importer = (fromPath: string, importFile: string) => {
     return { filePath, dsl };
 };
 
-const adapterAccumulator = (format: 'default' | 'rasa' | 'snips' | 'dialogflow', formatOptions?: any) => {
-    const trainingDataset: snips.ISnipsDataset | rasa.IRasaDataset | luis.ILuisDataset | dialogflow.IDialogflowDataset | {} = {};
-    const testingDataset: any = {};
-    const adapterHandler = adapters[format];
-    if (!adapterHandler) {
-        throw new Error(`Invalid adapter: ${format}`);
-    }
-    return {
-        write: async (fullFilenamePath: string) => {
-            // tslint:disable-next-line:no-console
-            console.log(`Processing file: ${fullFilenamePath}`);
-            const dsl = fs.readFileSync(fullFilenamePath, 'utf8');
-            const { training, testing } = await adapterHandler.adapter(dsl, formatOptions, importer, fullFilenamePath);
-            utils.mergeDeep(trainingDataset, training);
-            utils.mergeDeep(testingDataset, testing);
-        },
-        save: (outputPath: string) => {
-            if (!fs.existsSync(outputPath)) {
-                fs.mkdirSync(outputPath);
-            }
-
-            // Use adapter's own saver if exists
-            if ('save' in adapterHandler) {
-                adapterHandler.save(trainingDataset as dialogflow.IDialogflowDataset, testingDataset, outputPath, formatOptions);
-                return;
-            }
-
-            const trainingJsonFileName = argv.trainingFileName || `${format}_dataset_training.json`;
-            const trainingJsonFilePath = path.resolve(outputPath, trainingJsonFileName);
-            fs.writeFileSync(trainingJsonFilePath, JSON.stringify(trainingDataset));
-            // tslint:disable-next-line:no-console
-            console.log(`Saved training dataset: ${trainingJsonFilePath}`);
-
-            if (Object.keys(testingDataset).length) {
-                const testingFileName = argv.testingFileName || `${format}_dataset_testing.json`;
-                const testingJsonFilePath = path.resolve(outputPath, testingFileName);
-                fs.writeFileSync(testingJsonFilePath, JSON.stringify(testingDataset));
-                // tslint:disable-next-line:no-console
-                console.log(`Saved testing dataset: ${testingJsonFilePath}`);
-            }
-        }
-    };
-};
-
 (async () => {
     if (!argv._ || !argv._.length) {
         // tslint:disable-next-line:no-console
@@ -97,12 +47,13 @@ const adapterAccumulator = (format: 'default' | 'rasa' | 'snips' | 'dialogflow',
         process.exit(1);
     }
     const configFile = argv._[0];
-    const format = (argv.format || 'default').toLowerCase();
-    if (['default', 'rasa', 'snips', 'luis', 'dialogflow'].indexOf(format) === -1) {
+    const inputFormat = (argv.format || 'default').toLowerCase();
+    if (['default', 'rasa', 'rasa2', 'snips', 'luis', 'dialogflow'].indexOf(inputFormat) === -1) {
         // tslint:disable-next-line:no-console
-        console.error(`Invalid format argument: ${format}`);
+        console.error(`Invalid format argument: ${inputFormat}`);
         process.exit(1);
     }
+    const format: 'default' | 'rasa' | 'rasa2' | 'snips' | 'luis' | 'dialogflow' = inputFormat;
     const outputPath = argv.outputPath || process.cwd();
     try {
         // parse the formatOptions argument
@@ -111,14 +62,18 @@ const adapterAccumulator = (format: 'default' | 'rasa' | 'snips' | 'dialogflow',
             formatOptions = JSON.parse(fs.readFileSync(path.resolve(argv.formatOptions), 'utf8'));
         }
         const dslFilePath = getFileWithPath(configFile);
-        const isDirectory = fs.existsSync(dslFilePath) && fs.lstatSync(dslFilePath).isDirectory();
-        const accumulator = adapterAccumulator(format, formatOptions);
-        if (isDirectory) {
-            await chatitoFilesFromDir(dslFilePath, accumulator.write);
+        const filenames: string[] = [];
+        collectChatitoFiles(dslFilePath, filenames);
+        const adapter = adapters[format];
+        if ('processFiles' in adapter) {
+            adapter.processFiles(filenames, formatOptions, importer, outputPath);
         } else {
-            await accumulator.write(dslFilePath);
+            const accumulator = defaultAccumulator(adapter, importer, formatOptions, argv.trainingFileName, argv.testingFileName);
+            for (const filename of filenames) {
+                await accumulator.write(filename);
+            }
+            accumulator.save(outputPath);
         }
-        accumulator.save(outputPath);
     } catch (e) {
         // tslint:disable:no-console
         if (e && e.message && e.location) {

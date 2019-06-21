@@ -2,6 +2,8 @@ import * as gen from '../main';
 import { ISentenceTokens } from '../types';
 import * as utils from '../utils';
 
+export const name = 'rasa';
+
 export interface IRasaEntity {
     start: number;
     end: number;

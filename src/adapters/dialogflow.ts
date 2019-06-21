@@ -3,6 +3,8 @@ import * as path from 'path';
 import * as gen from '../main';
 import { ISentenceTokens } from '../types';
 
+export const name = 'dialogflow';
+
 export interface IDialogflowEntity {
     text: string;
     alias?: string;

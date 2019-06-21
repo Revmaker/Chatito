@@ -2,6 +2,8 @@ import * as gen from '../main';
 import { ISentenceTokens } from '../types';
 import * as utils from '../utils';
 
+export const name = 'luis';
+
 export interface ILuisEntityLabel {
     startCharIndex: number;
     endCharIndex: number;
