@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { resolve } from 'path';
 import * as gen from '../main';
 import { ISentenceTokens } from '../types';
 import * as utils from '../utils';
@@ -6,14 +7,77 @@ import { IRasaDataset, IRasaEntity, IRasaExample, IRasaTestingDataset } from './
 
 export const name = 'rasa2';
 
-export function processFiles(filenames: string[], formatOptions: any, importer: gen.IFileImporter, outputPath: string) {
-    for (const filename of filenames) {
-        const dsl = fs.readFileSync(filename, 'utf8');
+interface ICommonData {
+    synonyms: { [entityName: string]: { [original: string]: Set<string> } };
+    reverseSynonyms: { [entityName: string]: { [synonym: string]: string } };
+    allSynonyms: { [original: string]: Set<string> };
+}
 
+export async function processFiles(
+    filenames: string[],
+    formatOptions: any,
+    importer: gen.IFileImporter,
+    outputPath: string,
+    trainingFileName?: string,
+    testingFileName?: string
+) {
+    const trainingDataset: IRasaDataset = {
+        rasa_nlu_data: {
+            regex_features: [],
+            entity_synonyms: [],
+            common_examples: []
+        }
+    };
+    const testingDataset = { rasa_nlu_data: { common_examples: [] as IRasaExample[] } };
+    const cd: ICommonData = {
+        synonyms: {},
+        reverseSynonyms: {},
+        allSynonyms: {}
+    };
+
+    for (const filename of filenames) {
+        // tslint:disable-next-line:no-console
+        console.log(`Processing file: ${filename}`);
+        const dsl = fs.readFileSync(filename, 'utf8');
+        const { training, testing } = await customAdapter(dsl, cd, formatOptions, importer, filename);
+        utils.mergeDeep(trainingDataset, training);
+        utils.mergeDeep(testingDataset, testing);
+    }
+
+    Object.keys(cd.allSynonyms).forEach(k => {
+        trainingDataset.rasa_nlu_data.entity_synonyms.push({
+            synonyms: [...cd.allSynonyms[k]],
+            value: k
+        });
+    });
+    if (!fs.existsSync(outputPath)) {
+        fs.mkdirSync(outputPath);
+    }
+    const trainingJsonFileName = trainingFileName || `rasa2_dataset_training.json`;
+    const trainingJsonFilePath = resolve(outputPath, trainingJsonFileName);
+    fs.writeFileSync(trainingJsonFilePath, JSON.stringify(trainingDataset));
+    // tslint:disable-next-line:no-console
+    console.log(`Saved training dataset: ${trainingJsonFilePath}`);
+
+    if (Object.keys(testingDataset.rasa_nlu_data.common_examples).length) {
+        const testingJsonFileName = testingFileName || `rasa2_dataset_testing.json`;
+        const testingJsonFilePath = resolve(outputPath, testingJsonFileName);
+        fs.writeFileSync(testingJsonFilePath, JSON.stringify(testingDataset));
+        // tslint:disable-next-line:no-console
+        console.log(`Saved testing dataset: ${testingJsonFilePath}`);
     }
 }
 
 export async function adapter(dsl: string, formatOptions?: any, importer?: gen.IFileImporter, currentPath?: string) {
+    const cd: ICommonData = {
+        synonyms: {},
+        reverseSynonyms: {},
+        allSynonyms: {}
+    };
+    return customAdapter(dsl, cd, formatOptions, importer, currentPath);
+}
+
+export async function customAdapter(dsl: string, cd: ICommonData, formatOptions?: any, importer?: gen.IFileImporter, currentPath?: string) {
     const training: IRasaDataset = {
         rasa_nlu_data: {
             regex_features: [],
@@ -22,9 +86,7 @@ export async function adapter(dsl: string, formatOptions?: any, importer?: gen.I
         }
     };
     const testing = { rasa_nlu_data: { common_examples: [] as IRasaExample[] } };
-    const synonyms: { [entityName: string]: { [original: string]: Set<string> } } = {};
-    const reverseSynonyms: { [entityName: string]: { [synonym: string]: string } } = {};
-    const allSynonyms: { [original: string]: Set<string> } = {};
+    const { synonyms, reverseSynonyms, allSynonyms } = cd;
     if (formatOptions) {
         utils.mergeDeep(training, formatOptions);
     }
@@ -96,11 +158,5 @@ export async function adapter(dsl: string, formatOptions?: any, importer?: gen.I
         }
     };
     await gen.datasetFromString(dsl, utteranceWriter, importer, currentPath);
-    Object.keys(allSynonyms).forEach(k => {
-        training.rasa_nlu_data.entity_synonyms.push({
-            synonyms: [...allSynonyms[k]],
-            value: k
-        });
-    });
     return { training, testing };
 }

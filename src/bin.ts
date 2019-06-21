@@ -66,7 +66,7 @@ const importer = (fromPath: string, importFile: string) => {
         collectChatitoFiles(dslFilePath, filenames);
         const adapter = adapters[format];
         if ('processFiles' in adapter) {
-            adapter.processFiles(filenames, formatOptions, importer, outputPath);
+            await adapter.processFiles(filenames, formatOptions, importer, outputPath, argv.trainingFileName, argv.testingFileName);
         } else {
             const accumulator = defaultAccumulator(adapter, importer, formatOptions, argv.trainingFileName, argv.testingFileName);
             for (const filename of filenames) {
