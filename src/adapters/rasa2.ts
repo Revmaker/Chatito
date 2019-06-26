@@ -127,6 +127,7 @@ export async function customAdapter(dsl: string, cd: ICommonData, formatOptions?
 
     // Then the examples
     const utteranceWriter = (utterance: ISentenceTokens[], intentKey: string, isTrainingExample: boolean) => {
+        const intent = intentKey.split('#')[0];
         const example = utterance.reduce(
             (acc, next) => {
                 if (next.type === 'Slot' && next.slot) {
@@ -149,7 +150,7 @@ export async function customAdapter(dsl: string, cd: ICommonData, formatOptions?
                 acc.text += next.value;
                 return acc;
             },
-            { text: '', intent: intentKey, entities: [] } as IRasaExample
+            { text: '', intent, entities: [] } as IRasaExample
         );
         if (isTrainingExample) {
             training.rasa_nlu_data.common_examples.push(example);
