@@ -15,6 +15,8 @@ import * as utils from './utils';
 const chatito = require('../parser/chatito') as IChatitoParser;
 const chance = new Chance();
 
+const getEntityKey = (token: ISentenceTokens) => (token.variation ? `${token.value}#${token.variation}` : token.value);
+
 const chatitoFormatPostProcess = (data: ISentenceTokens[]) => {
     const arr = data.reduce(
         (accumulator: ISentenceTokens[], next: ISentenceTokens, i, arrShadow) => {
@@ -207,52 +209,21 @@ export const getImports = (from: string, to: string, importer: IFileImporter) =>
     }
 };
 
-const generateExample = (defs: IEntities, entity: IChatitoEntityAST, path: number[]) => {
-    const sentenceIndex = path.shift();
-    const sentence = entity.inner[sentenceIndex!].sentence;
-    const parts: ISentenceTokens[] = sentence.reduce(
-        (acc, token) => {
-            if (token.type === 'Slot' || token.type === 'Alias') {
-                if (token.opt && path[0] === -1) {
-                    path.shift();
-                    return acc;
-                }
-                const innerEntity = token.type === 'Alias' ? defs.Alias : defs.Slot;
-                const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
-                let tokens = generateExample(defs, innerEntity[entityKey], path);
-                tokens = chatitoFormatPostProcess(tokens).map(t => {
-                    if (token.type === 'Slot') {
-                        if (innerEntity[entityKey].args) {
-                            t.args = innerEntity[entityKey].args;
-                        }
-                        t.value = t.value.trim();
-                        t.type = token.type;
-                        t.slot = token.value;
-                    }
-                    return t;
-                });
-                return acc.concat(tokens);
-            }
-            return acc.concat([token]);
-        },
-        [] as ISentenceTokens[]
-    );
-    return parts;
-};
-
-const getExampleByNumber = (defs: IEntities, entity: IChatitoEntityAST, combinationNumber: number): ISentenceTokens[] => {
+export const getExampleByNumber = (defs: IEntities, entity: IChatitoEntityAST, combinationNumber: number): ISentenceTokens[] => {
     let lookupNumber = combinationNumber;
-    const sentenceIndex = entity.cardinalities!.findIndex(cardinality => {
-        if (lookupNumber < cardinality) {
+    const sentence = entity.inner.find(s => {
+        if (lookupNumber < s.cardinality!) {
             return true;
         }
-        lookupNumber -= cardinality;
+        lookupNumber -= s.cardinality!;
         return false;
     });
-    const sentence = entity.inner[sentenceIndex].sentence;
+    if (!sentence) {
+        return [];
+    }
     let prevCardinality = 1;
     let prevRemaining = 0;
-    const resultTokens = sentence.reduce(
+    const resultTokens = sentence.sentence.reduce(
         (example, token) => {
             if (token.type === 'Text') {
                 return example.concat([token]);
@@ -298,193 +269,6 @@ export const getAllExamples = (defs: IEntities, entity: IChatitoEntityAST) => {
     return result;
 };
 
-const getExamples = (defs: IEntities, intent: IChatitoEntityAST, count: number, index: number, distribuition: 'smart' | 'even') => {
-    const sentence = intent.inner[index].sentence;
-    let paths: number[][] = [];
-    if (distribuition === 'smart') {
-        paths = getPaths(defs, sentence, index);
-        if (count < paths.length) {
-            utils.shuffle(paths);
-            paths = paths.slice(0, count);
-        }
-    } else {
-        // const maxCount = sentence.reduce((acc, token) => {
-        //     if (token.type === 'Text') {
-        //         return acc;
-        //     }
-        //     const entity = token.type === 'Alias' ? defs.Alias : defs.Slot;
-        //     const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
-        //     return acc * entity[entityKey].paths!.length;
-        // }, 1);
-        // if (count > maxCount * 0.9) {
-        //     paths = getPaths(defs, sentence, index);
-        //     if (count < paths.length) {
-        //         utils.shuffle(paths);
-        //         paths = paths.slice(0, count);
-        //     }
-        // } else {
-        paths = getRandomPaths(defs, sentence, index, count);
-        // }
-    }
-    return paths.map(path => chatitoFormatPostProcess(generateExample(defs, intent, path)));
-};
-
-const generateExamples = (definitions: IEntities, intentKey: string, distribuition: 'smart' | 'even') => {
-    const intent = definitions.Intent[intentKey];
-    const maxExamplesCountBySentences = utils.maxSentences(intent, definitions);
-    let targetExamplesCountBySentences = maxExamplesCountBySentences;
-    let target = 0;
-    if (distribuition === 'even') {
-        if (intent.args && intent.args.training) {
-            target = parseInt(intent.args.training, 10);
-            let sentencesCount = maxExamplesCountBySentences.length;
-            targetExamplesCountBySentences = maxExamplesCountBySentences.map(count => {
-                const norm = Math.floor(target / sentencesCount);
-                sentencesCount -= 1;
-                if (count >= norm) {
-                    target -= norm;
-                    return norm;
-                } else {
-                    target -= count;
-                    return count;
-                }
-            });
-        }
-    }
-    let targetPerc = 100;
-    if (intent.args && intent.args.training && intent.args.training.endsWith('%')) {
-        targetPerc = parseFloat(intent.args.training);
-        // TODO: check 0 < x <= 100
-    }
-    if (distribuition === 'smart' && targetPerc < 100) {
-        const maxExamples = maxExamplesCountBySentences.reduce((acc, count) => acc + count, 0);
-        const maxTargetExamples = Math.ceil((maxExamples * targetPerc) / 100);
-        const minPerc = (targetPerc * 2) / 3;
-        targetExamplesCountBySentences = maxExamplesCountBySentences.map(count => Math.floor((count * minPerc) / 100));
-        // console.log('MIN BY SENTENCES:', targetExamplesCountBySentences);
-        const minExamplesCount = targetExamplesCountBySentences.reduce((acc, count) => acc + count, 0);
-        let remainingExamples = maxTargetExamples - minExamplesCount;
-        const countsToIndexMap = maxExamplesCountBySentences.reduce(
-            (acc, count, index) => {
-                count in acc ? acc[count].push(index) : (acc[count] = [index]);
-                return acc;
-            },
-            {} as { [k: number]: number[] }
-        );
-        const counts = Object.keys(countsToIndexMap)
-            .map(k => parseInt(k, 10))
-            .sort((a, b) => a - b);
-        // console.log('COUNTS:', counts);
-        counts.forEach(count => {
-            if (!remainingExamples) {
-                return;
-            }
-            const indices = countsToIndexMap[count];
-            const avail = maxExamplesCountBySentences[indices[0]] - targetExamplesCountBySentences[indices[0]];
-            const remainingPerIndex = Math.floor(remainingExamples / indices.length);
-            if (remainingPerIndex >= avail) {
-                indices.forEach(i => (targetExamplesCountBySentences[i] += avail));
-                remainingExamples -= avail * indices.length;
-            } else {
-                indices.forEach(i => (targetExamplesCountBySentences[i] += remainingPerIndex));
-                remainingExamples -= remainingPerIndex * indices.length;
-                if (remainingExamples > 0) {
-                    indices.forEach(i => {
-                        if (!remainingExamples) {
-                            return;
-                        }
-                        targetExamplesCountBySentences[i] += 1;
-                        remainingExamples -= 1;
-                    });
-                }
-            }
-        });
-    }
-    // console.log('MAX BY SENTENCES:', maxExamplesCountBySentences);
-    // console.log('TARGET BY SENTENCES:', targetExamplesCountBySentences);
-    return targetExamplesCountBySentences.reduce(
-        (acc, count, index) => {
-            const newAcc = acc.concat(getExamples(definitions, intent, count, index, distribuition));
-            return newAcc;
-        },
-        [] as ISentenceTokens[][]
-    );
-};
-
-const getRandomPath = (defs: IEntities, entity: IChatitoEntityAST) => {
-    let path = [Math.floor(Math.random() * entity.inner.length)];
-    entity.inner[path[0]].sentence.forEach(token => {
-        if (token.type === 'Text') {
-            return;
-        }
-        if (token.opt && Math.random() > 0.5) {
-            path.push(-1);
-            return;
-        }
-        const innerEntity = token.type === 'Alias' ? defs.Alias : defs.Slot;
-        const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
-        path = path.concat(getRandomPath(defs, innerEntity[entityKey]));
-    });
-    return path;
-};
-
-const getRandomPaths = (defs: IEntities, sentence: ISentenceTokens[], index: number, count: number) => {
-    const paths: number[][] = [];
-    const stringPaths: string[] = [];
-    while (paths.length < count) {
-        let currentPath: number[] = [index];
-        sentence.forEach(token => {
-            if (token.type === 'Text') {
-                return;
-            }
-            if (token.opt && Math.random() > 0.5) {
-                currentPath.push(-1);
-                return;
-            }
-            const entity = token.type === 'Alias' ? defs.Alias : defs.Slot;
-            const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
-            currentPath = currentPath.concat(getRandomPath(defs, entity[entityKey]));
-            // const innerPaths = entity[entityKey].paths!;
-            // currentPath = currentPath.concat(innerPaths[Math.floor(Math.random() * innerPaths.length)]);
-        });
-        if (stringPaths.some(path => path === currentPath.join())) {
-            continue;
-        }
-        stringPaths.push(currentPath.join());
-        paths.push(currentPath);
-    }
-    return paths;
-};
-
-const getPaths = (defs: IEntities, sentence: ISentenceTokens[], index: number) => {
-    let paths = [[index]];
-    sentence.forEach(token => {
-        if (token.type === 'Text') {
-            return;
-        }
-        const entity = token.type === 'Alias' ? defs.Alias : defs.Slot;
-        const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
-        let optionalPaths = [] as number[][];
-        if (token.opt) {
-            optionalPaths = paths.map(path => path.concat([-1]));
-        }
-        paths = paths.reduce(
-            (acc, startPath) => acc.concat(entity[entityKey].paths!.map(path => startPath.concat(path))),
-            [] as number[][]
-        );
-        if (token.opt) {
-            paths = paths.concat(optionalPaths);
-        }
-    });
-    return paths;
-};
-
-const calcPaths = (defs: IEntities, key: string, type: 'Alias' | 'Slot') => {
-    const entity = defs[type][key];
-    const paths = entity.inner.reduce((acc, sentence, index) => acc.concat(getPaths(defs, sentence.sentence, index)), [] as number[][]);
-    entity.paths = paths;
-};
-
 const getCardinality = (defs: IEntities, sentence: ISentenceTokens[]) => {
     return sentence.reduce((acc, token) => {
         if (token.type === 'Text') {
@@ -500,112 +284,138 @@ const getCardinality = (defs: IEntities, sentence: ISentenceTokens[]) => {
     }, 1);
 };
 
-const calcCardinality = (defs: IEntities, key: string, type: 'Alias' | 'Slot') => {
-    const entity = defs[type][key];
-    const cardinalities = entity.inner.map(sentence => getCardinality(defs, sentence.sentence));
-    entity.cardinality = cardinalities.reduce((acc, cardinality) => acc + cardinality, 0);
-    entity.cardinalities = cardinalities;
-    // console.log(`${key} cardinality:`, entity.cardinality);
+const calcCardinality = (defs: IEntities, entity: IChatitoEntityAST) => {
+    entity.inner.forEach(sentence => {
+        const cardinality = getCardinality(defs, sentence.sentence);
+        sentence.cardinality = cardinality;
+    });
+    entity.cardinality = entity.inner.reduce((acc, sentence) => acc + sentence.cardinality!, 0);
+};
+
+const getRefKey = (item: IChatitoEntityAST | ISentenceTokens) => {
+    const type = item.type.replace('Definition', '');
+    const key = 'key' in item ? item.key : getEntityKey(item);
+    switch (type) {
+        case 'Intent':
+            return `%[${key}]`;
+        case 'Alias':
+            return `~[${key}]`;
+        case 'Slot':
+            return `@[${key}]`;
+
+        default:
+            return `(${key})`;
+    }
+};
+
+const hasTokenWithoutCardinality = (defs: IEntities, entity: IChatitoEntityAST, refs: { [key: string]: Set<string> }) => {
+    const parentKey = getRefKey(entity);
+    return entity.inner.some(sentence =>
+        sentence.sentence.some(token => {
+            if (token.type === 'Text') {
+                return false;
+            }
+            const entityKey = getEntityKey(token);
+            const refKey = getRefKey(token);
+            if (refKey in refs) {
+                refs[refKey].add(parentKey);
+            } else {
+                refs[refKey] = new Set([parentKey]);
+            }
+            if (!defs[token.type][entityKey]) {
+                throw new Error(`${token.type} not defined: ${entityKey}`);
+            }
+            return defs[token.type][entityKey].cardinality === undefined;
+        })
+    );
+};
+
+const findLoopIn = (path: string[], refs: { [key: string]: Set<string> }): false | string[] => {
+    const last = path[path.length - 1];
+    if (refs[last]) {
+        for (const parent of refs[last]) {
+            if (parent === path[0]) {
+                return path.concat([parent]);
+            } else {
+                const inner = findLoopIn(path.concat([parent]), refs);
+                if (inner) {
+                    return inner;
+                }
+            }
+        }
+    }
+    return false;
+};
+
+const findLoop = (refs: { [key: string]: Set<string> }) => {
+    for (const key of Object.keys(refs)) {
+        const path = [key];
+        const loop = findLoopIn(path, refs);
+        if (loop) {
+            return loop.reverse();
+        }
+    }
+    return false;
+};
+
+const findNestedSlots = (path: string[], refs: { [key: string]: Set<string> }) => {
+    const last = path[path.length - 1];
+    if (refs[last]) {
+        for (const parent of refs[last]) {
+            const firstIndex = path.findIndex(item => item.startsWith('@'));
+            if (firstIndex !== -1 && parent.startsWith('@')) {
+                const slotsPath = path
+                    .slice(firstIndex)
+                    .reverse()
+                    .join(' -> ');
+                throw new Error(`You have nested slots: ${parent} -> ${slotsPath}. A slot can't reference other slot.`);
+            } else {
+                findNestedSlots(path.concat([parent]), refs);
+            }
+        }
+    }
+};
+
+const checkNestedSlots = (refs: { [key: string]: Set<string> }) => {
+    for (const key of Object.keys(refs)) {
+        const path = [key];
+        findNestedSlots(path, refs);
+    }
 };
 
 const preCalcCardinality = (defs: IEntities) => {
-    const calculated = new Set<string>();
     // cycle through uncalculated:
-    let aliases = [] as string[];
-    let slots = [] as string[];
+    const uncalced = {
+        Intent: [] as string[],
+        Alias: [] as string[],
+        Slot: [] as string[]
+    };
+    const refs: { [key: string]: Set<string> } = {};
+    let totalUncalced = 0;
+    let lastUncalced = -1;
     do {
-        aliases = Object.keys(defs.Alias).filter(aliasKey => defs.Alias[aliasKey].cardinality === undefined);
-        slots = Object.keys(defs.Slot).filter(aliasKey => defs.Slot[aliasKey].cardinality === undefined);
-
-        aliases.forEach(aliasKey => {
-            const canCalc = !defs.Alias[aliasKey].inner.find(
-                sentence =>
-                    !!sentence.sentence.find(token => {
-                        if (token.type === 'Text') {
-                            return false;
-                        }
-                        const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
-                        const key = (token.type === 'Alias' ? 'a' : 's') + entityKey;
-                        return !calculated.has(key);
-                    })
-            );
-            if (canCalc) {
-                calcCardinality(defs, aliasKey, 'Alias');
-                calculated.add(`a${aliasKey}`);
+        totalUncalced = 0;
+        for (const type of Object.keys(uncalced) as Array<keyof typeof uncalced>) {
+            uncalced[type] = Object.keys(defs[type]).filter(key => defs[type][key].cardinality === undefined);
+            uncalced[type].forEach(key => {
+                if (!hasTokenWithoutCardinality(defs, defs[type][key], refs)) {
+                    calcCardinality(defs, defs[type][key]);
+                } else {
+                    totalUncalced += 1;
+                }
+            });
+        }
+        if (lastUncalced === totalUncalced) {
+            const loop = findLoop(refs);
+            let error = 'You have a circular nesting';
+            if (loop) {
+                error = `You have a circular nesting: ${loop.join(' -> ')}`;
             }
-        });
-        slots.forEach(slotKey => {
-            const canCalc = !defs.Slot[slotKey].inner.find(
-                sentence =>
-                    !!sentence.sentence.find(token => {
-                        if (token.type === 'Text') {
-                            return false;
-                        }
-                        const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
-                        const key = (token.type === 'Alias' ? 'a' : 's') + entityKey;
-                        return !calculated.has(key);
-                    })
-            );
-            if (canCalc) {
-                calcCardinality(defs, slotKey, 'Slot');
-                calculated.add(`s${slotKey}`);
-            }
-        });
-        // console.log('entities left to count:', aliases.length + slots.length);
-        // console.log('aliases left to count:', aliases);
-        // console.log('slots left to count:', slots);
-        // console.log('calculated', calculated);
-    } while (aliases.length + slots.length > 0);
-};
-
-const preCalcPaths = (defs: IEntities) => {
-    const calculated = new Set<string>();
-    // cycle through uncalculated:
-    let aliases = [] as string[];
-    let slots = [] as string[];
-    do {
-        aliases = Object.keys(defs.Alias).filter(aliasKey => !defs.Alias[aliasKey].paths);
-        slots = Object.keys(defs.Slot).filter(aliasKey => !defs.Slot[aliasKey].paths);
-
-        aliases.forEach(aliasKey => {
-            const canCalc = !defs.Alias[aliasKey].inner.find(
-                sentence =>
-                    !!sentence.sentence.find(token => {
-                        if (token.type === 'Text') {
-                            return false;
-                        }
-                        const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
-                        const key = (token.type === 'Alias' ? 'a' : 's') + entityKey;
-                        return !calculated.has(key);
-                    })
-            );
-            if (canCalc) {
-                calcPaths(defs, aliasKey, 'Alias');
-                calculated.add(`a${aliasKey}`);
-            }
-        });
-        slots.forEach(slotKey => {
-            const canCalc = !defs.Slot[slotKey].inner.find(
-                sentence =>
-                    !!sentence.sentence.find(token => {
-                        if (token.type === 'Text') {
-                            return false;
-                        }
-                        const entityKey = token.variation ? `${token.value}#${token.variation}` : token.value;
-                        const key = (token.type === 'Alias' ? 'a' : 's') + entityKey;
-                        return !calculated.has(key);
-                    })
-            );
-            if (canCalc) {
-                calcPaths(defs, slotKey, 'Slot');
-                calculated.add(`s${slotKey}`);
-            }
-        });
-        // console.log('entities left to count:', aliases.length + slots.length);
-        // console.log('aliases left to count:', aliases);
-        // console.log('slots left to count:', slots);
-        // console.log('calculated', calculated);
-    } while (aliases.length + slots.length > 0);
+            throw new Error(`${error}. Infinite loop prevented.`);
+        }
+        lastUncalced = totalUncalced;
+    } while (totalUncalced > 0);
+    checkNestedSlots(refs);
 };
 
 const addMissingAliases = (defs: IEntities) => {
@@ -670,10 +480,7 @@ export const definitionsFromAST = (initialAst: IChatitoEntityAST[], importHandle
         return;
     }
     addMissingAliases(operatorDefinitions);
-    // preCalcPaths(operatorDefinitions);
-    // console.log('STARTED cardinality calculation');
     preCalcCardinality(operatorDefinitions);
-    // console.log('FINISHED cardinality calculation');
     return operatorDefinitions;
 };
 

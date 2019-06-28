@@ -653,92 +653,6 @@ describe('example with slots nest inside alias', () => {
     });
 });
 
-describe.only('example with smart distribution', () => {
-    const example60PercOf16 = `
-%[intent]('training': '60%', 'distribution': 'smart')
-    ~[ab]
-    ~[cd]
-    ~[ab] ~[cd]
-    ~[ab] ~[cd] ~[ab]
-
-~[ab]
-    a
-    b
-
-~[cd]
-    c
-    d
-
-~[ef]
-    ~[ab]
-    ~[cd]
-    ~[ab] ~[cd]
-    ~[ab] ~[cd?] ~[ab]
-`;
-
-// Target: 60% (9)    %/rec       Final
-// 2  2    40% -> 0   50%     +2  2
-// 2  2    40% -> 0   50%     +2  2
-// 4  2    40% -> 1   25%     +1  2
-// 8  2    40% -> 3   12.5%       3
-// Total          4
-
-// Target: 80% (12)    %/rec       Final
-// 2  2    53.3% -> 1   50%     +1  2
-// 2  2    53.3% -> 1   50%     +1  2
-// 4  2    53.3% -> 2   25%     +2  4
-// 8  2    53.3% -> 4   12.5%       4
-// Total            8
-
-// Target: 96         Min  %    %/rec
-// 5       5   5      2    40%  20%   5  100%
-// 5       5   5      2    40%  20%   5  100%
-// 25      25  20     10   40%  4%    25 100%
-// 125     61  66     50   40%  0.8%  61 48.8%
-// Avg                     40%           87.2%
-
-// Target: 60%
-// Min: 40%  40%   30%
-// Target: 80%
-// Min: 70%  53.33%   40%
-// Target: 95%
-// Min: 92.5% 63.33%  47.5%
-// Target: 50%
-// Min: 25%  33.33%   25%
-// Target: 30%
-// Min: 15%  20%
-
-    test('correctly generates necessary combinations', async () => {
-        let error = null;
-        const dataset: { [key: string]: ISentenceTokens[][] } = {};
-        const writer: IUtteranceWriter = (u, k, n) => {
-            if (!dataset[k]) {
-                dataset[k] = [];
-            }
-            dataset[k].push(u);
-        };
-        try {
-            await chatito.datasetFromString(example60PercOf16, writer);
-        } catch (e) {
-            error = e;
-        }
-        expect(error).toBeNull();
-        expect(dataset.intent).not.toBeNull();
-        // console.log(dataset.intent);
-        expect(dataset.intent.length).toEqual(10);
-        const lengths = {};
-        for (const x of dataset.intent) {
-            const utteranceString = x.reduce((p, n) => p + n.value, '');
-            const len = utteranceString.length;
-            lengths[len] = len in lengths ? lengths[len] + 1 : 1
-        }
-        expect(lengths).toEqual({
-            '1': 4,
-            '3': 3,
-            '5': 3
-        });
-    });
-
 describe('example with wrong probability value', () => {
     const badExample = `
 %[greet]
@@ -1053,5 +967,75 @@ describe('example that only has one sentence with probs', () => {
         expect(dataset!.training).not.toBeNull();
         expect(dataset!.training.findRestaurantsByCity).not.toBeNull();
         expect(dataset!.training.findRestaurantsByCity.length).toEqual(3);
+    });
+});
+
+describe('generating all the examples', () => {
+    const allExample = `
+%[intent]
+    ~[1-3]
+    ~[nested]
+
+~[1-3]
+    1
+    2
+    3
+
+@[4-5]
+    4
+    5
+
+~[nested]
+    @[4-5] ~[1-3?]
+`;
+
+    const expectedAllExamples = [
+        [{ value: '1', type: 'Text' }],
+        [{ value: '2', type: 'Text' }],
+        [{ value: '3', type: 'Text' }],
+        [{ value: '4', type: 'Slot', slot: '4-5' }],
+        [{ value: '5', type: 'Slot', slot: '4-5' }],
+        [{ value: '4', type: 'Slot', slot: '4-5' }, { type: 'Text', value: ' 1' }],
+        [{ value: '5', type: 'Slot', slot: '4-5' }, { type: 'Text', value: ' 1' }],
+        [{ value: '4', type: 'Slot', slot: '4-5' }, { type: 'Text', value: ' 2' }],
+        [{ value: '5', type: 'Slot', slot: '4-5' }, { type: 'Text', value: ' 2' }],
+        [{ value: '4', type: 'Slot', slot: '4-5' }, { type: 'Text', value: ' 3' }],
+        [{ value: '5', type: 'Slot', slot: '4-5' }, { type: 'Text', value: ' 3' }]
+    ];
+
+    test('correctly generates all examles for an intent', () => {
+        const ast = chatito.astFromString(allExample);
+        const defs = chatito.definitionsFromAST(ast);
+        expect(defs).not.toBeUndefined();
+
+        const allExamples = chatito.getAllExamples(defs!, defs!.Intent.intent);
+        expect(allExamples).toStrictEqual(expectedAllExamples);
+    });
+
+    test('correctly generates all examles for a slot', () => {
+        const ast = chatito.astFromString(allExample);
+        const defs = chatito.definitionsFromAST(ast);
+        expect(defs).not.toBeUndefined();
+
+        const allExamples = chatito.getAllExamples(defs!, defs!.Slot['4-5']);
+        expect(allExamples).toStrictEqual([[{ value: '4', type: 'Text' }], [{ value: '5', type: 'Text' }]]);
+    });
+
+    test('correctly picks examle by number', () => {
+        const ast = chatito.astFromString(allExample);
+        const defs = chatito.definitionsFromAST(ast);
+        expect(defs).not.toBeUndefined();
+
+        const sixthOfIntent = chatito.getExampleByNumber(defs!, defs!.Intent.intent, 5);
+        expect(sixthOfIntent).toStrictEqual([{ value: '4', type: 'Slot', slot: '4-5' }, { type: 'Text', value: ' 1' }]);
+
+        const thirdOfFirstAlias = chatito.getExampleByNumber(defs!, defs!.Alias['1-3'], 2);
+        expect(thirdOfFirstAlias).toStrictEqual([{ value: '3', type: 'Text' }]);
+
+        const secondOfFirstSlot = chatito.getExampleByNumber(defs!, defs!.Slot['4-5'], 1);
+        expect(secondOfFirstSlot).toStrictEqual([{ value: '5', type: 'Text' }]);
+
+        const fourthOfSecondAlias = chatito.getExampleByNumber(defs!, defs!.Alias.nested, 3);
+        expect(fourthOfSecondAlias).toStrictEqual([{ value: '5', type: 'Slot', slot: '4-5' }, { type: 'Text', value: ' 1' }]);
     });
 });
